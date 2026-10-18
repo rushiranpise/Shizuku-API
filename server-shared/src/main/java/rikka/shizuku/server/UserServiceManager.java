@@ -16,6 +16,7 @@ import android.content.pm.PackageInfo;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.IBinder;
+import android.os.Parcel;
 import android.text.format.DateUtils;
 import android.util.ArrayMap;
 
@@ -249,13 +250,39 @@ public abstract class UserServiceManager {
         }
 
         if (entry == null) {
-            throw new IllegalArgumentException("unable to find token " + token);
+            // A binder for a token this server no longer knows, which is what a record that was
+            // dropped - started too long ago, replaced by a newer version, the client went away -
+            // looks like from the process that was started for it. Throwing here answered the
+            // attaching process with a RuntimeException it cannot act on and left that process
+            // running with nobody holding it; it is told to destroy itself instead, which is what
+            // it would have been told had the record still existed.
+            LOGGER.w("Received binder for unknown/expired token %s; destroying the attaching service", token);
+            destroyOrphanBinder(binder);
+            return;
         }
 
         LOGGER.v("Received binder for service record %s", token);
 
         UserServiceRecord record = entry.getValue();
         record.setBinder(binder);
+    }
+
+    private void destroyOrphanBinder(IBinder binder) {
+        if (binder == null || !binder.pingBinder()) {
+            return;
+        }
+
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(binder.getInterfaceDescriptor());
+            binder.transact(ShizukuApiConstants.USER_SERVICE_TRANSACTION_destroy, data, reply, Binder.FLAG_ONEWAY);
+        } catch (Throwable e) {
+            LOGGER.w("Failed to destroy the orphaned user service binder", e);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
     }
 
     public void attachUserService(IBinder binder, Bundle options) {
