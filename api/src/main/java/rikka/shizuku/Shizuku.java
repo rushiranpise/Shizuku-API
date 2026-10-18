@@ -45,7 +45,9 @@ public class Shizuku {
     private static boolean permissionGranted = false;
     private static boolean shouldShowRequestPermissionRationale = false;
     private static boolean preV11 = false;
-    private static boolean binderReady = false;
+    /** Written from the binder thread that receives the server, read by every thread that
+     *  registers a sticky listener, so it has to be visible across them. */
+    private static volatile boolean binderReady = false;
 
     private static final IShizukuApplication SHIZUKU_APPLICATION = new IShizukuApplication.Stub() {
 
