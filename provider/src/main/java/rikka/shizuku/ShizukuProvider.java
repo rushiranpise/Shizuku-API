@@ -108,6 +108,16 @@ public class ShizukuProvider extends ContentProvider {
     }
 
     /**
+     * The receiver a non-provider process listens on, held once per process.
+     *
+     * Registering a fresh one on every call leaked every earlier one: they were never
+     * unregistered, so a process that asked twice - an Application that calls this in
+     * `onCreate` and again after a reconnect - kept adding receivers that each delivered the
+     * same binder to the same static. One registration answers all of them.
+     */
+    private static BroadcastReceiver receiver;
+
+    /**
      * Require binder for non-provider process, should have {@link #enableMultiProcessSupport(boolean)} called first.
      *
      * @param context Context
@@ -119,21 +129,28 @@ public class ShizukuProvider extends ContentProvider {
 
         Log.d(TAG, "request binder in non-provider process");
 
-        BroadcastReceiver receiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context context, Intent intent) {
-                BinderContainer container = intent.getParcelableExtra(EXTRA_BINDER);
-                if (container != null && container.binder != null) {
-                    Log.i(TAG, "binder received from broadcast");
-                    Shizuku.onBinderReceived(container.binder, context.getPackageName());
+        if (receiver == null) {
+            receiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    BinderContainer container = intent.getParcelableExtra(EXTRA_BINDER);
+                    if (container != null && container.binder != null) {
+                        Log.i(TAG, "binder received from broadcast");
+                        Shizuku.onBinderReceived(container.binder, context.getPackageName());
+                    }
                 }
-            }
-        };
+            };
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(receiver, new IntentFilter(ACTION_BINDER_RECEIVED), Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            context.registerReceiver(receiver, new IntentFilter(ACTION_BINDER_RECEIVED));
+            // The application context, not the one handed in: an Activity's context would keep
+            // the activity alive for as long as the process lives, which is every activity that
+            // ever asked.
+            Context app = context.getApplicationContext() != null
+                    ? context.getApplicationContext() : context;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                app.registerReceiver(receiver, new IntentFilter(ACTION_BINDER_RECEIVED), Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                app.registerReceiver(receiver, new IntentFilter(ACTION_BINDER_RECEIVED));
+            }
         }
 
         Bundle reply;
