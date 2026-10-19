@@ -145,7 +145,10 @@ public class Shizuku {
             try {
                 binder.linkToDeath(DEATH_RECIPIENT, 0);
             } catch (Throwable e) {
-                Log.i("ShizukuApplication", "attachApplication");
+                // The binder arrived already dead, which is not an attach that worked: the line
+                // here said "attachApplication" and nothing else, so a failed handover was
+                // logged as a successful one.
+                Log.w("ShizukuApplication", "linkToDeath failed", e);
             }
 
             try {
