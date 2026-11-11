@@ -34,6 +34,7 @@ import rikka.hidden.compat.PackageManagerApis;
 import rikka.shizuku.ShizukuApiConstants;
 import rikka.shizuku.server.util.AbiUtil;
 import rikka.shizuku.server.util.Logger;
+import rikka.shizuku.server.util.ProcessUtils;
 import rikka.shizuku.server.util.UserHandleCompat;
 
 public abstract class UserServiceManager {
@@ -99,7 +100,8 @@ public abstract class UserServiceManager {
         }
     }
 
-    public int addUserService(IShizukuServiceConnection conn, Bundle options, int callingApiVersion) {
+    public int addUserService(IShizukuServiceConnection conn, Bundle options, int callingApiVersion,
+                              boolean temporary) {
         Objects.requireNonNull(conn, "connection is null");
         Objects.requireNonNull(options, "options is null");
 
@@ -146,7 +148,7 @@ public abstract class UserServiceManager {
                     return 1;
                 }
             } else {
-                UserServiceRecord newRecord = createUserServiceRecordIfNeededLocked(record, key, versionCode, daemon, packageInfo);
+                UserServiceRecord newRecord = createUserServiceRecordIfNeededLocked(record, key, versionCode, daemon, packageInfo, temporary);
                 newRecord.callbacks.register(conn);
 
                 if (newRecord.service != null && newRecord.service.pingBinder()) {
@@ -168,7 +170,8 @@ public abstract class UserServiceManager {
     }
 
     private UserServiceRecord createUserServiceRecordIfNeededLocked(
-            UserServiceRecord record, String key, int versionCode, boolean daemon, PackageInfo packageInfo) {
+            UserServiceRecord record, String key, int versionCode, boolean daemon, PackageInfo packageInfo,
+            boolean temporary) {
 
         if (record != null) {
             if (record.versionCode != versionCode) {
@@ -196,6 +199,11 @@ public abstract class UserServiceManager {
                 }
             }
         };
+
+        record.uid = Binder.getCallingUid();
+        record.ownerPid = Binder.getCallingPid();
+        record.packageName = packageInfo.packageName;
+        record.temporary = temporary;
 
         String packageName = packageInfo.packageName;
         List<UserServiceRecord> list = packageUserServiceRecords.get(packageName);
@@ -265,6 +273,29 @@ public abstract class UserServiceManager {
 
         UserServiceRecord record = entry.getValue();
         record.setBinder(binder);
+        // The service process is the one that sent this binder; its command line carries the
+        // token, which is how the server finds the pid it never otherwise learns.
+        record.pid = ProcessUtils.findPidByToken(record.token);
+    }
+
+    /** A copy of the live records, for the manager's temporary-session view. */
+    public List<UserServiceRecord> snapshotRecords() {
+        synchronized (this) {
+            return new ArrayList<>(userServiceRecords.values());
+        }
+    }
+
+    /**
+     * Ends a user service: the cooperative destroy first, then a signal for a service that does
+     * not exit on its own. The process runs as the server's uid, so the signal is always allowed.
+     */
+    public void killUserService(UserServiceRecord record) {
+        synchronized (this) {
+            removeUserServiceLocked(record);
+        }
+        if (record.pid > 0) {
+            ProcessUtils.killPid(record.pid);
+        }
     }
 
     private void destroyOrphanBinder(IBinder binder) {

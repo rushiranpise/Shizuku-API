@@ -40,6 +40,20 @@ public abstract class UserServiceRecord {
     public boolean daemon;
     public boolean starting;
 
+    /** The app that asked for this service, and the client process that asked. */
+    public int uid = -1;
+    public int ownerPid = -1;
+    /** The service process itself, found when its binder arrives; -1 until then. */
+    public int pid = -1;
+    /** The package the service belongs to, for the manager's list. */
+    public String packageName;
+    /** Whether the service was started while its owner held a temporary grant. */
+    public boolean temporary;
+
+    public boolean isAlive() {
+        return service != null && service.pingBinder();
+    }
+
     public UserServiceRecord(int versionCode, boolean daemon) {
         this.versionCode = versionCode;
         this.token = UUID.randomUUID().toString() + "-" + System.currentTimeMillis();

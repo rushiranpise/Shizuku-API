@@ -16,11 +16,18 @@ public class RemoteProcessHolder extends IRemoteProcess.Stub {
     private static final Logger LOGGER = new Logger("RemoteProcessHolder");
 
     private final Process process;
+    private final int uid;
+    private final int ownerPid;
+    private final boolean temporary;
     private ParcelFileDescriptor in;
     private ParcelFileDescriptor out;
+    private Runnable onGone;
 
-    public RemoteProcessHolder(Process process, IBinder token) {
+    public RemoteProcessHolder(Process process, IBinder token, int uid, int ownerPid, boolean temporary) {
         this.process = process;
+        this.uid = uid;
+        this.ownerPid = ownerPid;
+        this.temporary = temporary;
 
         if (token != null) {
             try {
@@ -88,9 +95,41 @@ public class RemoteProcessHolder extends IRemoteProcess.Stub {
         return process.exitValue();
     }
 
+    public int getUid() {
+        return uid;
+    }
+
+    /** The client process that asked for this shell. */
+    public int getOwnerPid() {
+        return ownerPid;
+    }
+
+    /** Whether the shell was started while its owner held a temporary grant. */
+    public boolean isTemporary() {
+        return temporary;
+    }
+
+    /** Called when the holder is destroyed, so the server can drop it from its list. */
+    public void setOnGone(Runnable onGone) {
+        this.onGone = onGone;
+    }
+
+    /** [alive] without the checked exception, for counting. */
+    public boolean isAliveQuiet() {
+        try {
+            return alive();
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
     @Override
     public void destroy() {
         process.destroy();
+        Runnable r = onGone;
+        if (r != null) {
+            r.run();
+        }
     }
 
     @Override

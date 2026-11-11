@@ -1,6 +1,8 @@
 package rikka.rish;
 
 import android.os.ParcelFileDescriptor;
+import android.system.Os;
+import android.system.OsConstants;
 import android.util.Log;
 
 public class RishHost {
@@ -60,7 +62,7 @@ public class RishHost {
     private final int stderr;
     private int pid;
     private int ptmx;
-    private int exitCode = Integer.MAX_VALUE;
+    private volatile int exitCode = Integer.MAX_VALUE;
 
     public RishHost(
             String[] args, String[] env, String dir,
@@ -105,6 +107,25 @@ public class RishHost {
 
     public int getExitCode() {
         return exitCode;
+    }
+
+    /** Whether the forked shell is still running. */
+    public boolean isAlive() {
+        return exitCode == Integer.MAX_VALUE;
+    }
+
+    /**
+     * Kills the forked shell. The host is a fork of the server, so the server may always signal
+     * it; descendants are handled separately by session.
+     */
+    public void kill() {
+        if (pid <= 0) {
+            return;
+        }
+        try {
+            Os.kill(pid, OsConstants.SIGKILL);
+        } catch (Throwable ignored) {
+        }
     }
 
     public void setWindowSize(long size) {

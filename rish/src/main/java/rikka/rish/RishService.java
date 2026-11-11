@@ -10,7 +10,9 @@ import android.util.Log;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 public abstract class RishService {
@@ -18,6 +20,44 @@ public abstract class RishService {
     private static final String TAG = "RishService";
 
     private static final Map<Integer, RishHost> HOSTS = new HashMap<>();
+
+    /** Every host ever started, for the manager's temporary-session view. */
+    private static final List<HostEntry> ALL_HOSTS = new ArrayList<>();
+
+    public static final class HostEntry {
+        public final RishHost host;
+        public final int callingPid;
+        public final int uid;
+        public final long since;
+        public final boolean temporary;
+
+        HostEntry(RishHost host, int callingPid, int uid, long since, boolean temporary) {
+            this.host = host;
+            this.callingPid = callingPid;
+            this.uid = uid;
+            this.since = since;
+            this.temporary = temporary;
+        }
+    }
+
+    /** Lets the server say whether the client that asked for a host held a temporary grant. */
+    public interface TemporaryResolver {
+        boolean isTemporary(int uid, int pid);
+    }
+
+    private static volatile TemporaryResolver temporaryResolver;
+
+    public static void setTemporaryResolver(TemporaryResolver resolver) {
+        temporaryResolver = resolver;
+    }
+
+    /** A copy of every host, so the caller can filter and kill without holding a lock. */
+    public static List<HostEntry> snapshotHosts() {
+        synchronized (ALL_HOSTS) {
+            ALL_HOSTS.removeIf(entry -> !entry.host.isAlive());
+            return new ArrayList<>(ALL_HOSTS);
+        }
+    }
 
     private static final boolean IS_ROOT = Os.getuid() == 0;
 
@@ -53,6 +93,13 @@ public abstract class RishService {
         Log.d(TAG, "Forked " + host.getPid());
 
         HOSTS.put(callingPid, host);
+        TemporaryResolver resolver = temporaryResolver;
+        boolean temporary = resolver != null
+                && resolver.isTemporary(Binder.getCallingUid(), callingPid);
+        synchronized (ALL_HOSTS) {
+            ALL_HOSTS.add(new HostEntry(host, callingPid, Binder.getCallingUid(),
+                    System.currentTimeMillis(), temporary));
+        }
     }
 
     private void setWindowSize(long size) {

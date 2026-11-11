@@ -18,12 +18,24 @@ public class ClientRecord {
     public final int apiVersion;
     public boolean allowed;
 
+    /**
+     * True while this process holds a grant that was answered "once". It lives only in this
+     * record: nothing is written to the config and the platform permission is not touched, so
+     * the grant ends when the process does.
+     */
+    public boolean temporary;
+
+    /** When the temporary grant was given, in wall-clock millis; 0 when there is none. */
+    public long since;
+
     public ClientRecord(int uid, int pid, IShizukuApplication client, String packageName, int apiVersion) {
         this.uid = uid;
         this.pid = pid;
         this.client = client;
         this.packageName = packageName;
         this.allowed = false;
+        this.temporary = false;
+        this.since = 0;
         this.apiVersion = apiVersion;
     }
 

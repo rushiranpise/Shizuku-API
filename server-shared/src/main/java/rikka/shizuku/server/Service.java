@@ -15,7 +15,10 @@ import androidx.annotation.Nullable;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 
 import moe.shizuku.server.IRemoteProcess;
 import moe.shizuku.server.IShizukuApplication;
@@ -40,6 +43,9 @@ public abstract class Service<
     private final ClientMgr clientManager;
     private final RishService rishService;
 
+    /** Shells started through [newProcess], so the manager can count and stop them. */
+    private final List<RemoteProcessHolder> remoteProcesses = Collections.synchronizedList(new ArrayList<>());
+
     protected static final Logger LOGGER = new Logger("Service");
 
     public Service() {
@@ -55,6 +61,11 @@ public abstract class Service<
                 Service.this.enforceCallingPermission(func);
             }
         };
+
+        RishService.setTemporaryResolver((uid, pid) -> {
+            ClientRecord record = clientManager.findClient(uid, pid);
+            return record != null && record.temporary;
+        });
     }
 
     public abstract UserServiceMgr onCreateUserServiceManager();
@@ -65,6 +76,15 @@ public abstract class Service<
 
     public final UserServiceMgr getUserServiceManager() {
         return userServiceManager;
+    }
+
+    public final List<RemoteProcessHolder> getRemoteProcesses() {
+        synchronized (remoteProcesses) {
+            // A shell that exited on its own never calls destroy(), so drop it here rather than
+            // letting the list grow for the life of the server.
+            remoteProcesses.removeIf(holder -> !holder.isAliveQuiet());
+            return new ArrayList<>(remoteProcesses);
+        }
     }
 
     public final ClientMgr getClientManager() {
@@ -231,15 +251,11 @@ public abstract class Service<
 
         int callingUid = Binder.getCallingUid();
         int callingPid = Binder.getCallingPid();
-        int callingApiVersion;
-
         ClientRecord clientRecord = clientManager.findClient(callingUid, callingPid);
-        if (clientRecord == null) {
-            callingApiVersion = ShizukuApiConstants.SERVER_VERSION;
-        } else {
-            callingApiVersion = clientRecord.apiVersion;
-        }
-        return userServiceManager.addUserService(conn, options, callingApiVersion);
+        boolean temporary = clientRecord != null && clientRecord.temporary;
+        int callingApiVersion = clientRecord == null
+                ? ShizukuApiConstants.SERVER_VERSION : clientRecord.apiVersion;
+        return userServiceManager.addUserService(conn, options, callingApiVersion, temporary);
     }
 
     @Override
@@ -318,8 +334,14 @@ public abstract class Service<
 
         ClientRecord clientRecord = clientManager.findClient(Binder.getCallingUid(), Binder.getCallingPid());
         IBinder token = clientRecord != null ? clientRecord.client.asBinder() : null;
+        int uid = clientRecord != null ? clientRecord.uid : Binder.getCallingUid();
+        int ownerPid = clientRecord != null ? clientRecord.pid : Binder.getCallingPid();
 
-        return new RemoteProcessHolder(process, token);
+        boolean temporary = clientRecord != null && clientRecord.temporary;
+        RemoteProcessHolder holder = new RemoteProcessHolder(process, token, uid, ownerPid, temporary);
+        holder.setOnGone(() -> remoteProcesses.remove(holder));
+        remoteProcesses.add(holder);
+        return holder;
     }
 
     @CallSuper

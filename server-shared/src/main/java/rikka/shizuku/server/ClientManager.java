@@ -37,6 +37,13 @@ public class ClientManager<ConfigMgr extends ConfigManager> {
         }
     }
 
+    /** A copy of every attached client, for the manager's temporary-session view. */
+    public List<ClientRecord> snapshotClients() {
+        synchronized (this) {
+            return new ArrayList<>(clientRecords);
+        }
+    }
+
     public ClientRecord findClient(int uid, int pid) {
         for (ClientRecord clientRecord : clientRecords) {
             if (clientRecord.pid == pid && clientRecord.uid == uid) {
