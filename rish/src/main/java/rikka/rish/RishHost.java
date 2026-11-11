@@ -98,7 +98,21 @@ public class RishHost {
         pid = result[0];
         ptmx = result[1];
 
-        new Thread(() -> exitCode = waitFor(pid)).start();
+        new Thread(() -> {
+            exitCode = waitFor(pid);
+            closePtmx();
+        }).start();
+    }
+
+    /** The transfers use duplicates, so the master is closed once, when the host is gone. */
+    private synchronized void closePtmx() {
+        if (ptmx >= 0) {
+            try {
+                ParcelFileDescriptor.adoptFd(ptmx).close();
+            } catch (Throwable ignored) {
+            }
+            ptmx = -1;
+        }
     }
 
     public int getPid() {
@@ -128,10 +142,12 @@ public class RishHost {
         }
     }
 
-    public void setWindowSize(long size) {
+    public synchronized void setWindowSize(long size) {
         Log.d(TAG, "setWindowSize");
 
-        setWindowSize(ptmx, size);
+        if (ptmx >= 0) {
+            setWindowSize(ptmx, size);
+        }
     }
 
     private static native int[] start(

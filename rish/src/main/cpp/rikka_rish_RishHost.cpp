@@ -139,22 +139,27 @@ static jintArray RishHost_startHost(
             kill(pid, SIGKILL);
         };
 
+        // ptmx is used in both directions, and each transfer closes its fds when it ends.
+        // Handing the same fd to both made them close it twice: the second close could hit a
+        // number already reused by a Java FileInputStream, which fdsan aborts the server for.
+        // Each direction gets its own duplicate; the original stays for setWindowSize and is
+        // closed when the host exits.
         if (in_tty) {
-            transfer_async(stdin_read, ptmx/*, func*/);
+            transfer_async(stdin_read, dup(ptmx));
         } else {
-            transfer_async(stdin_read, stdin_pipe[1]/*, func*/);
+            transfer_async(stdin_read, stdin_pipe[1]);
             close(stdin_pipe[0]);
         }
 
         if (out_tty) {
-            transfer_async(ptmx, stdout_write, func);
+            transfer_async(dup(ptmx), stdout_write, func);
         } else {
             transfer_async(stdout_pipe[0], stdout_write, func);
             close(stdout_pipe[1]);
         }
 
         if (!err_tty) {
-            transfer_async(stderr_pipe[0], stderr_write/*, func*/);
+            transfer_async(stderr_pipe[0], stderr_write);
             close(stderr_pipe[1]);
         }
 
