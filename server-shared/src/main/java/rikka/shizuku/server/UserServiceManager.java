@@ -87,7 +87,7 @@ public abstract class UserServiceManager {
             if (remove) {
                 removeUserServiceLocked(record);
             } else {
-                record.callbacks.unregister(conn);
+                record.unregister(conn);
             }
         }
         return 0;
@@ -96,6 +96,15 @@ public abstract class UserServiceManager {
     private void removeUserServiceLocked(UserServiceRecord record) {
         if (userServiceRecords.values().remove(record)) {
             record.destroy();
+
+            List<UserServiceRecord> list = packageUserServiceRecords.get(record.packageName);
+            if (list != null) {
+                list.remove(record);
+                if (list.isEmpty()) {
+                    packageUserServiceRecords.remove(record.packageName);
+                }
+            }
+
             onUserServiceRecordRemoved(record);
         }
     }
@@ -106,6 +115,7 @@ public abstract class UserServiceManager {
         Objects.requireNonNull(options, "options is null");
 
         int uid = Binder.getCallingUid();
+        int pid = Binder.getCallingPid();
         int appId = UserHandleCompat.getAppId(uid);
         int userId = UserHandleCompat.getUserId(uid);
 
@@ -129,7 +139,7 @@ public abstract class UserServiceManager {
             UserServiceRecord record = getUserServiceRecordLocked(key);
             if (noCreate) {
                 if (record != null) {
-                    record.callbacks.register(conn);
+                    record.register(conn, uid, pid, temporary);
 
                     if (record.service != null && record.service.pingBinder()) {
                         record.broadcastBinderReceived();
@@ -148,8 +158,8 @@ public abstract class UserServiceManager {
                     return 1;
                 }
             } else {
-                UserServiceRecord newRecord = createUserServiceRecordIfNeededLocked(record, key, versionCode, daemon, packageInfo, temporary);
-                newRecord.callbacks.register(conn);
+                UserServiceRecord newRecord = createUserServiceRecordIfNeededLocked(record, key, versionCode, daemon, packageInfo);
+                newRecord.register(conn, uid, pid, temporary);
 
                 if (newRecord.service != null && newRecord.service.pingBinder()) {
                     newRecord.broadcastBinderReceived();
@@ -170,8 +180,7 @@ public abstract class UserServiceManager {
     }
 
     private UserServiceRecord createUserServiceRecordIfNeededLocked(
-            UserServiceRecord record, String key, int versionCode, boolean daemon, PackageInfo packageInfo,
-            boolean temporary) {
+            UserServiceRecord record, String key, int versionCode, boolean daemon, PackageInfo packageInfo) {
 
         if (record != null) {
             if (record.versionCode != versionCode) {
@@ -200,10 +209,7 @@ public abstract class UserServiceManager {
             }
         };
 
-        record.uid = Binder.getCallingUid();
-        record.ownerPid = Binder.getCallingPid();
         record.packageName = packageInfo.packageName;
-        record.temporary = temporary;
 
         String packageName = packageInfo.packageName;
         List<UserServiceRecord> list = packageUserServiceRecords.get(packageName);
@@ -334,10 +340,13 @@ public abstract class UserServiceManager {
     }
 
     public void removeUserServicesForPackage(String packageName) {
-        List<UserServiceRecord> list = packageUserServiceRecords.get(packageName);
-        if (list != null) {
-            for (UserServiceRecord record : list) {
-                record.removeSelf();
+        synchronized (this) {
+            List<UserServiceRecord> list = packageUserServiceRecords.get(packageName);
+            if (list == null) {
+                return;
+            }
+            for (UserServiceRecord record : new ArrayList<>(list)) {
+                removeUserServiceLocked(record);
                 LOGGER.i("Remove user service %s for package %s", record.token, packageName);
             }
             packageUserServiceRecords.remove(packageName);

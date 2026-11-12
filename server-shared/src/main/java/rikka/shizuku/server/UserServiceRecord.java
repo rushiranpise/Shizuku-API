@@ -7,6 +7,11 @@ import android.os.IBinder;
 import android.os.Parcel;
 import android.os.RemoteCallbackList;
 
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import moe.shizuku.server.IShizukuServiceConnection;
@@ -15,13 +20,44 @@ import rikka.shizuku.server.util.Logger;
 
 public abstract class UserServiceRecord {
 
+    /**
+     * One client that bound this service, with the process and grant it held when it did.
+     *
+     * <p>A service key can be shared by several clients, so the requester belongs to the
+     * connection, not to the record: two processes of one app can bind the same service under
+     * different grants, and a session stop has to remove only the association it names.
+     */
+    public static final class Association {
+        final IShizukuServiceConnection callback;
+        public final int uid;
+        public final int pid;
+        public final boolean temporary;
+
+        Association(IShizukuServiceConnection callback, int uid, int pid, boolean temporary) {
+            this.callback = callback;
+            this.uid = uid;
+            this.pid = pid;
+            this.temporary = temporary;
+        }
+
+        boolean matches(int uid, int sessionPid) {
+            return temporary && this.uid == uid && (sessionPid == 0 || pid == sessionPid);
+        }
+    }
+
     private Runnable startTimeoutCallback;
+
+    private final Map<IBinder, Association> associations = new LinkedHashMap<>();
+    /** The last temporary holder of a daemon that outlived its client, kept for the manager. */
+    private Association orphan;
 
     private class ConnectionList extends RemoteCallbackList<IShizukuServiceConnection> {
 
         @Override
         public void onCallbackDied(IShizukuServiceConnection callback) {
-            if (daemon || getRegisteredCallbackCount() != 0) {
+            boolean empty = removeAssociation(callback);
+
+            if (daemon || !empty) {
                 return;
             }
 
@@ -40,15 +76,10 @@ public abstract class UserServiceRecord {
     public boolean daemon;
     public boolean starting;
 
-    /** The app that asked for this service, and the client process that asked. */
-    public int uid = -1;
-    public int ownerPid = -1;
     /** The service process itself, found when its binder arrives; -1 until then. */
     public int pid = -1;
     /** The package the service belongs to, for the manager's list. */
     public String packageName;
-    /** Whether the service was started while its owner held a temporary grant. */
-    public boolean temporary;
 
     public boolean isAlive() {
         return service != null && service.pingBinder();
@@ -62,6 +93,75 @@ public abstract class UserServiceRecord {
             removeSelf();
         };
         this.daemon = daemon;
+    }
+
+    public void register(IShizukuServiceConnection callback, int uid, int pid, boolean temporary) {
+        synchronized (associations) {
+            associations.put(callback.asBinder(), new Association(callback, uid, pid, temporary));
+            orphan = null;
+        }
+        callbacks.register(callback);
+    }
+
+    public void unregister(IShizukuServiceConnection callback) {
+        removeAssociation(callback);
+        callbacks.unregister(callback);
+    }
+
+    private boolean removeAssociation(IShizukuServiceConnection callback) {
+        synchronized (associations) {
+            Association association = associations.remove(callback.asBinder());
+            if (association != null && association.temporary && associations.isEmpty()) {
+                orphan = association;
+            }
+            return association != null && associations.isEmpty();
+        }
+    }
+
+    /** The live associations, or the last temporary holder when only a daemon remains. */
+    public List<Association> snapshotAssociations() {
+        synchronized (associations) {
+            List<Association> list = new ArrayList<>(associations.values());
+            if (list.isEmpty() && orphan != null) {
+                list.add(orphan);
+            }
+            return list;
+        }
+    }
+
+    /**
+     * Removes the temporary associations matching the selected client/session, and returns
+     * whether no association is left, i.e. whether stopping the record may kill its process.
+     * A service still used by another client, temporary or permanent, is left running.
+     */
+    public boolean removeTemporaryAssociations(int uid, int sessionPid, int pid) {
+        if (pid != 0 && this.pid != pid) {
+            return false;
+        }
+
+        List<IShizukuServiceConnection> removed = new ArrayList<>();
+        boolean empty;
+        synchronized (associations) {
+            boolean matched = false;
+            for (Iterator<Map.Entry<IBinder, Association>> it = associations.entrySet().iterator(); it.hasNext(); ) {
+                Association association = it.next().getValue();
+                if (!association.matches(uid, sessionPid)) {
+                    continue;
+                }
+                it.remove();
+                removed.add(association.callback);
+                matched = true;
+            }
+            if (orphan != null && orphan.matches(uid, sessionPid)) {
+                orphan = null;
+                matched = true;
+            }
+            empty = matched && associations.isEmpty();
+        }
+        for (IShizukuServiceConnection callback : removed) {
+            callbacks.unregister(callback);
+        }
+        return empty;
     }
 
     public void setStartingTimeout(long timeoutMillis) {
@@ -151,6 +251,10 @@ public abstract class UserServiceRecord {
             }
         }
 
+        synchronized (associations) {
+            associations.clear();
+            orphan = null;
+        }
         callbacks.kill();
     }
 }
